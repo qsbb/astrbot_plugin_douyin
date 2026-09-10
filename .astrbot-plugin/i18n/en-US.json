@@ -78,7 +78,7 @@
       "accountStatusUnavailable": "Account status unavailable",
       "error_ACCOUNT_STATUS_UNAVAILABLE": "The account cannot be verified right now. You can still log in and operate the browser. Refresh status later to verify the account.",
       "error_PLAYWRIGHT_NOT_INSTALLED": "Playwright is missing from the AstrBot environment. Install the plugin dependencies, then open the browser again. Automatic retries are paused.",
-      "error_BROWSER_NOT_INSTALLED": "The browser is missing from the AstrBot environment. Run python -m playwright install chromium there, or install the configured browser, then select Log in / Open browser. Automatic retries are paused.",
+      "error_BROWSER_NOT_INSTALLED": "The browser is missing. For Chromium, leave browser_channel empty and run python -m playwright install chromium in the same Python environment or container as AstrBot. For Chrome/Edge, install that browser instead. Then select Log in / Open browser. Automatic retries are paused.",
       "error_BROWSER_DEPENDENCIES_MISSING": "Browser system dependencies are missing. Run python -m playwright install --with-deps chromium in the Linux environment or container running AstrBot, then reopen the browser. Automatic retries are paused.",
       "error_BROWSER_PROFILE_UNWRITABLE": "The browser data directory is not writable. Check permissions on the AstrBot data directory, then reopen the browser. Automatic retries are paused.",
       "error_PROFILE_IN_USE": "Another instance is using this browser profile. Close that instance, then reopen the browser. Automatic retries are paused.",
