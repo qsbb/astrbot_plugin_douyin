@@ -1,0 +1,7 @@
+name: astrbot_plugin_douyin
+display_name: 凝心溯溪-趣
+desc: 凝心溯溪系列抖音模块：内容发现、视频理解与分享互动
+version: 0.0.1
+author: 凌溪
+repo: https://github.com/qsbb/astrbot_plugin_douyin
+astrbot_version: ">=4.28,<5"

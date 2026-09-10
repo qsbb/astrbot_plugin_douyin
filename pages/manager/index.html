@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>拾趣 · 抖音工作台</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div><span class="eyebrow">凝心溯溪 · 趣</span><h1 data-i18n="heading">拾趣 · 抖音工作台</h1><p data-i18n="intro">使用 Bot 的抖音账号，在这里登录、浏览和互动。</p></div>
+      <button id="refresh-status" type="button" data-i18n="refreshStatus">刷新状态</button>
+    </header>
+    <div id="notice" role="status" aria-live="polite" class="notice" data-i18n="connecting">正在连接 AstrBot 页面…</div>
+    <section class="status-grid" aria-label="Account status" data-i18n-aria="statusLabel">
+      <div class="metric"><span data-i18n="currentAccount">当前登录账号</span><strong id="account-current">—</strong></div>
+      <div class="metric"><span data-i18n="botAccount">Bot 使用账号</span><strong id="account-bound">—</strong></div>
+      <div class="metric"><span data-i18n="controlState">浏览器控制权</span><strong id="control-state">—</strong></div>
+      <div class="metric"><span data-i18n="pluginState">插件状态</span><strong id="plugin-state">—</strong></div>
+    </section>
+    <div class="workspace">
+      <section class="card browser-card">
+        <div class="section-head"><div><h2 data-i18n="browserTitle">Bot 的抖音浏览器</h2><p data-i18n="browserHint">接管后可直接点击画面、输入文字或拖动滑块；Bot 会等待你归还。</p></div><span id="frame-state" class="pill" data-i18n="noFrame">尚未获取画面</span></div>
+        <div class="toolbar">
+          <button id="open-login" class="primary" type="button" data-i18n="openLogin">登录 / 打开浏览器</button>
+          <button id="acquire" type="button" data-i18n="acquire">接管浏览器</button>
+          <button id="release" type="button" data-owned data-i18n="release">归还给 Bot</button>
+          <button type="button" data-control="home" data-owned data-i18n="home">首页</button>
+          <button type="button" data-control="inbox" data-owned data-i18n="inbox">私信</button>
+          <button type="button" data-control="reload" data-owned data-i18n="reload">刷新网页</button>
+        </div>
+        <div class="viewport-wrap">
+          <div id="empty-frame"><span class="empty-mark" aria-hidden="true">趣</span><h3 data-i18n="emptyTitle">从登录开始</h3><p data-i18n="emptyHint">打开浏览器后，二维码和登录页面会显示在这里。已有登录状态会继续使用。</p></div>
+          <img id="browser-frame" hidden draggable="false" tabindex="0" alt="Bot 的抖音浏览器画面" data-i18n-alt="frameAlt">
+        </div>
+        <div class="frame-footer"><span id="frame-url">—</span><div><label class="check-inline"><input id="auto-refresh" type="checkbox" checked><span data-i18n="autoRefresh">每 2 秒刷新</span></label><button id="refresh-frame" type="button" data-owned data-i18n="refreshFrame">更新画面</button></div></div>
+        <div class="input-panel">
+          <label for="remote-text" data-i18n="textHint">先点击画面中的输入框，再发送文字</label>
+          <div class="input-row"><input id="remote-text" maxlength="2000" autocomplete="off" data-i18n-placeholder="textPlaceholder" placeholder="手机号、验证码或消息文字"><button id="send-text" type="button" data-owned data-i18n="insertText">输入文字</button></div>
+          <div class="toolbar compact"><label for="remote-key" data-i18n="keyboard">按键</label><select id="remote-key"><option value="Enter">Enter</option><option value="Tab">Tab</option><option value="Shift+Tab">Shift + Tab</option><option value="Backspace">Backspace</option><option value="Delete">Delete</option><option value="Escape">Escape</option><option value="Control+A">Ctrl + A</option><option value="Space">Space</option><option value="ArrowUp">↑</option><option value="ArrowDown">↓</option></select><button id="send-key" type="button" data-owned data-i18n="sendKey">发送按键</button><button type="button" data-scroll="-500" data-owned data-i18n="scrollUp">向上滚动</button><button type="button" data-scroll="500" data-owned data-i18n="scrollDown">向下滚动</button></div>
+          <p class="hint" data-i18n="manualHint">画面中的点赞、评论和发送会立即使用当前账号执行。验证码由你本人完成，输入内容不写入插件日志。</p>
+        </div>
+      </section>
+      <aside class="sidebar">
+        <section class="card"><h2 data-i18n="accountTitle">账号与运行</h2><p data-i18n="accountHint">登录完成后，核对账号并设为 Bot 使用的账号。页面和 Bot 共用同一份登录状态。</p><button id="bind-account" type="button" class="primary wide" data-i18n="bindAccount">让 Bot 使用当前账号</button><div class="divider"></div><button id="toggle-pause" type="button" class="wide danger" data-i18n="pause">暂停 Bot 操作</button><p class="hint" data-i18n="leaseHint">离开页面后，未续期的人工接管会在 5 分钟内自动归还。</p></section>
+        <section class="card"><h2 data-i18n="quickTitle">快捷操作</h2><p data-i18n="quickHint">通过插件执行结构化操作，结果会带有可核对的回执。</p><form id="quick-form"><label for="operation" data-i18n="operation">操作</label><select id="operation"></select><div id="operation-fields"></div><button id="run-operation" type="submit" class="primary wide" data-i18n="runOperation">执行操作</button></form><button id="check-receipt" type="button" class="wide" hidden data-i18n="checkReceipt">查询这次操作回执</button><p id="request-reference" class="hint mono"></p></section>
+      </aside>
+    </div>
+    <section class="card results-card"><div class="section-head"><div><h2 data-i18n="resultsTitle">操作结果</h2><p data-i18n="resultHint">“已发送输入”表示浏览器收到了人工操作；最终结果以当前画面或站内回执为准。</p></div><span id="result-state" class="pill">—</span></div><pre id="result-output" tabindex="0" data-i18n="noResult">还没有操作结果。</pre></section>
+    <div class="bottom-grid">
+      <section class="card"><div class="section-head"><div><h2 data-i18n="settingsTitle">Bot 授权</h2><p data-i18n="settingsHint">这些权限控制 Bot 的自动工具调用。只有管理员可以在页面保存。</p></div></div><form id="settings-form"><label class="check-inline"><input id="enabled" type="checkbox"><span data-i18n="enabled">启用抖音插件</span></label><fieldset><legend data-i18n="allowedActions">允许 Bot 执行的动作</legend><div class="check-grid"><label><input type="checkbox" name="action" value="set_like"><span data-i18n="op_set_like">点赞 / 取消点赞</span></label><label><input type="checkbox" name="action" value="post_comment"><span data-i18n="op_post_comment">评论 / 回复 / @</span></label><label><input type="checkbox" name="action" value="share_video"><span data-i18n="op_share_video">转发视频</span></label><label><input type="checkbox" name="action" value="send_message"><span data-i18n="op_send_message">发送私信</span></label></div></fieldset><label for="allowed-targets" data-i18n="allowedTargets">允许互动的用户或会话标识（每行一项）</label><textarea id="allowed-targets" rows="3" placeholder="user:12345&#10;conversation:67890"></textarea><details><summary data-i18n="chatPermissions">聊天调用权限</summary><label for="allowed-origins" data-i18n="allowedOrigins">允许的 AstrBot 会话 UMO（每行一项）</label><textarea id="allowed-origins" rows="3"></textarea><label for="allowed-actors" data-i18n="allowedActors">允许的调用者 ID（每行一项）</label><textarea id="allowed-actors" rows="3"></textarea><p class="hint" data-i18n="chatPermissionsHint">聊天中可用 /dy status 查看自己的 UMO 和调用者 ID。Dashboard 人工操作使用当前登录身份。</p></details><button id="save-settings" type="submit" class="primary" data-i18n="saveSettings">保存并立即生效</button><span id="settings-dirty" class="hint" hidden data-i18n="unsaved">有未保存的修改</span></form></section>
+      <section class="card"><div class="section-head"><div><h2 data-i18n="receiptsTitle">最近回执</h2><p data-i18n="receiptsHint">结果未知时先检查回执和画面，不要重复发送。</p></div><button id="refresh-receipts" type="button" data-i18n="refresh">刷新</button></div><div id="receipts" class="receipt-list"><p data-i18n="noReceipts">还没有站内操作回执。</p></div></section>
+    </div>
+  </main>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

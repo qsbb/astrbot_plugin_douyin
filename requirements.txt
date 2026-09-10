@@ -1,0 +1,3 @@
+aiohttp>=3.10
+playwright>=1.51
+PyYAML>=6.0

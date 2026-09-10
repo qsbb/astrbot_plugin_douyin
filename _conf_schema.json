@@ -1,0 +1,21 @@
+{
+  "enabled": {"type":"bool","description":"启用抖音工具；首次登录和管理员状态命令独立可用。","default":false},
+  "headless": {"type":"bool","description":"无窗口浏览器模式。首次扫码请关闭，并在运行 AstrBot 的机器操作。","default":false},
+  "browser_channel": {"type":"string","description":"浏览器：留空使用 Playwright Chromium；可填 chrome、msedge 或 chromium。","default":""},
+  "allowed_origins": {"type":"list","description":"允许调用的完整 AstrBot unified_msg_origin，使用 /dy status 获取。必须同时满足调用者名单。","default":[]},
+  "allowed_actor_ids": {"type":"list","description":"允许调用的宿主用户 ID，使用 /dy status 获取。站内写操作还要求 AstrBot 管理员角色。","default":[]},
+  "allowed_actions": {"type":"list","description":"管理员对具体动作的持续确认授权，可填 set_like、post_comment、share_video、send_message。留空禁止站内写入。","default":[]},
+  "allowed_target_refs": {"type":"list","description":"允许分享、私信或 @ 的稳定对象：user:UID、sec_user:SEC_UID 或 conversation:ID。通过对应工具核对后配置。","default":[]},
+  "expected_account_ref": {"type":"string","description":"绑定实际抖音登录账号，格式 user:UID，由 /dy status 返回。未绑定禁止写入，切号后重新核对。","default":""},
+  "action_limit_per_hour": {"type":"int","description":"每小时站内操作额度，1–100，失败和未知结果也计入。","default":12},
+  "action_cooldown_seconds": {"type":"int","description":"两次站内操作至少间隔秒数，1–3600。","default":15},
+  "operation_timeout_seconds": {"type":"int","description":"单次浏览器或模型操作超时秒数，5–180。写操作中断返回结果未知。","default":45},
+  "max_browse_items": {"type":"int","description":"一次最多打开的推荐作品数，1–5。","default":3},
+  "browse_dwell_seconds": {"type":"int","description":"推荐视频默认停留秒数，1–15。","default":3},
+  "media_max_mb": {"type":"int","description":"单个视频下载大小上限 MB，1–200，同时受媒体空间上限约束。","default":50},
+  "media_max_seconds": {"type":"int","description":"full 感知模式最多分析视频前多少秒，5–300，不代表逐帧观看整段。","default":120},
+  "media_cache_mb": {"type":"int","description":"内容提取临时媒体空间预算 MB，10–2000。完成或取消后删除本次媒体。","default":200},
+  "vision_provider_id": {"type":"string","description":"可选，AstrBot 已配置视觉模型的 Provider ID；留空尝试有效系列路由或当前会话模型。不填 API Key。","default":""},
+  "stt_provider_id": {"type":"string","description":"可选，AstrBot 已配置 STT Provider ID；留空尝试有效系列路由或会话 STT。不填 API Key。","default":""},
+  "ffmpeg_path": {"type":"string","description":"FFmpeg 可执行文件路径或 PATH 中命令名，不能填写命令参数。","default":"ffmpeg"}
+}
