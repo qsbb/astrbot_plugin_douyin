@@ -21,6 +21,11 @@
       <div class="metric"><span data-i18n="pluginState">插件状态</span><strong id="plugin-state">—</strong></div>
     </section>
     <div id="status-warning" role="status" aria-live="polite" class="notice error" hidden></div>
+    <section id="browser-runtime" class="notice runtime-panel" aria-live="polite" hidden>
+      <div><strong id="runtime-title" data-i18n="runtimeTitle">浏览器准备</strong><p id="runtime-message"></p><progress id="runtime-progress" max="100"></progress></div>
+      <button id="runtime-retry" type="button" data-i18n="runtimeRetry" hidden>重试准备</button>
+      <details id="runtime-details" hidden><summary data-i18n="runtimeDetails">查看原因</summary><pre id="runtime-detail"></pre></details>
+    </section>
     <div class="workspace">
       <section class="card browser-card">
         <div class="section-head"><div><h2 data-i18n="browserTitle">Bot 的抖音浏览器</h2><p data-i18n="browserHint">接管后可直接点击画面、输入文字或拖动滑块；Bot 会等待你归还。</p></div><span id="frame-state" class="pill" data-i18n="noFrame">尚未获取画面</span></div>

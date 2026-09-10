@@ -12,6 +12,7 @@ from .core.models import PLUGIN_ID, PLUGIN_NAME, SERIES_ID
 from .core.service import DouyinService
 from .core.settings import Settings
 from .douyin import BrowserSession
+from .douyin.runtime import ManagedBrowserRuntime
 from .integration.models import HostModels
 from .page_api import PageApi
 from .perception import MediaAnalyzer
@@ -49,11 +50,21 @@ class DouyinPlugin(Star):
         self.diagnostics = DiagnosticBuffer()
         self.settings = Settings.from_mapping(config)
         data_dir = Path(StarTools.get_data_dir(PLUGIN_ID))
-        browser = BrowserSession(data_dir, self.settings, self.diagnostics)
+        self.browser_runtime = ManagedBrowserRuntime(
+            data_dir, self.settings.browser_channel, self.diagnostics
+        )
+        browser = BrowserSession(
+            data_dir, self.settings, self.diagnostics, runtime=self.browser_runtime
+        )
         host = HostModels(context, self.settings, self.diagnostics)
         analyzer = MediaAnalyzer(data_dir, self.settings, host, self.diagnostics)
         self.service = DouyinService(
-            data_dir, self.settings, browser, analyzer, self.diagnostics
+            data_dir,
+            self.settings,
+            browser,
+            analyzer,
+            self.diagnostics,
+            browser_runtime=self.browser_runtime,
         )
         self.page_api = PageApi(context, config, self.service)
         self.page_api.register()
@@ -64,6 +75,10 @@ class DouyinPlugin(Star):
             {"enabled": self.settings.enabled},
         )
         logger.info("[douyin] plugin initialized")
+
+    async def initialize(self):
+        """在宿主完成加载后启动浏览器准备，安装期间保持 Page 可访问。"""
+        self.browser_runtime.start()
 
     def diagnostic_log_contract(self) -> dict:
         return self.diagnostics.contract()

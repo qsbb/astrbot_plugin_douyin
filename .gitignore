@@ -10,5 +10,6 @@ htmlcov/
 .DS_Store
 runtime.json
 browser-profile/
+browser-runtime/
 media-cache/
 *.bak

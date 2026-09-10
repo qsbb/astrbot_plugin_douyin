@@ -124,6 +124,24 @@ class PageControlMixin:
 
     async def _page_locked(self, caller, operation, params, save_config):
         if operation == "status" and not params:
+            runtime = (
+                self.browser_runtime.snapshot()
+                if self.browser_runtime is not None
+                else {"state": "external", "managed": False}
+            )
+            if (
+                runtime.get("state")
+                in {
+                    "checking",
+                    "installing_browser",
+                    "installing_dependencies",
+                    "verifying",
+                }
+                and self._control_active()
+                and self._page_owner == caller.actor_id
+            ):
+                # 可见页面仍在等待首次准备，不因没有可截取的页面而丢失接管权。
+                self._page_deadline = time.monotonic() + LEASE_SECONDS
             return {
                 **self.snapshot(),
                 "browser": await self.browser.status(),
@@ -132,7 +150,15 @@ class PageControlMixin:
                 "config": {key: asdict(self.settings)[key] for key in PAGE_CONFIG_KEYS},
                 "config_writable": save_config is not None,
                 "max_browse_items": self.settings.max_browse_items,
+                "browser_runtime": runtime,
             }
+        if operation == "prepare" and not params:
+            if self.browser_runtime is None:
+                raise PluginError(
+                    "BROWSER_PREPARATION_UNAVAILABLE", "当前环境未启用内置浏览器准备。"
+                )
+            self.browser_runtime.start(retry=True)
+            return {"browser_runtime": self.browser_runtime.snapshot()}
         if operation == "control" and set(params) == {"action"}:
             action = params["action"]
             if action == "acquire":

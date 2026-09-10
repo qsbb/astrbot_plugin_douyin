@@ -1,7 +1,7 @@
 {
   "enabled": {"type":"bool","description":"启用抖音工具；首次登录和管理员状态命令独立可用。","default":false},
-  "headless": {"type":"bool","description":"无窗口浏览器模式。无桌面的服务器建议开启，通过 Page 扫码登录；/dy login 用于有桌面的环境。","default":false},
-  "browser_channel": {"type":"string","description":"浏览器：留空使用 Playwright Chromium；可填 chrome、msedge 或 chromium。","default":""},
+  "headless": {"type":"bool","description":"无窗口浏览器模式。Page 和无桌面环境会自动使用无窗口模式；/dy login 用于有桌面的环境。","default":false},
+  "browser_channel": {"type":"string","description":"留空或 chromium：插件自动准备内置 Chromium；chrome、msedge：使用已经安装的系统 Chrome/Edge。","default":""},
   "allowed_origins": {"type":"list","description":"允许调用的完整 AstrBot unified_msg_origin，使用 /dy status 获取。必须同时满足调用者名单。","default":[]},
   "allowed_actor_ids": {"type":"list","description":"允许调用的宿主用户 ID，使用 /dy status 获取。站内写操作还要求 AstrBot 管理员角色。","default":[]},
   "allowed_actions": {"type":"list","description":"管理员对具体动作的持续确认授权，可填 set_like、post_comment、share_video、send_message。留空禁止站内写入。","default":[]},

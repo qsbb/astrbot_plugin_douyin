@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import sys
 from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
@@ -48,10 +49,11 @@ REMOTE_KEYS = {
 
 
 class BrowserSession:
-    def __init__(self, data_dir: Path, settings, diagnostics):
+    def __init__(self, data_dir: Path, settings, diagnostics, *, runtime=None):
         self.root = data_dir
         self.settings = settings
         self.diagnostics = diagnostics
+        self.runtime = runtime
         self._playwright = None
         self._context = None
         self._page = None
@@ -93,6 +95,9 @@ class BrowserSession:
         if self._context is not None:
             await self.close()
         self._remote_closing = False
+        runtime_options = (
+            await self.runtime.launch_options() if self.runtime is not None else {}
+        )
         try:
             self.root.mkdir(parents=True, exist_ok=True)
             self._profile_lock = (self.root / "browser-profile.lock").open("a+b")
@@ -132,8 +137,13 @@ class BrowserSession:
                 "viewport": {"width": 1280, "height": 900},
                 "locale": "zh-CN",
             }
-            if self.settings.browser_channel:
+            if sys.platform.startswith("linux") and not (
+                os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+            ):
+                options["headless"] = True
+            if self.runtime is None and self.settings.browser_channel:
                 options["channel"] = self.settings.browser_channel
+            options.update(runtime_options)
             self._context = await self._playwright.chromium.launch_persistent_context(
                 str(self.root / "browser-profile"), **options
             )
@@ -441,10 +451,13 @@ class BrowserSession:
             }
 
     async def start_login(self) -> dict:
-        if self.settings.headless:
+        if self.settings.headless or (
+            sys.platform.startswith("linux")
+            and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+        ):
             raise PluginError(
                 "HEADFUL_REQUIRED",
-                "首次登录请设置 headless=false，并在运行 AstrBot 的机器查看浏览器。",
+                "当前环境使用无窗口浏览器，请从插件 Page 完成扫码登录。",
             )
         await self._ensure()
         return {

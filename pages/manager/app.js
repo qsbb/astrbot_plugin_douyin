@@ -13,6 +13,7 @@ let controlRevision = 0;
 let statusError = null;
 let frameError = null;
 let autoFrameBlocked = false;
+let pendingBrowserAction = null;
 let pendingWrite = null;
 let unsubscribe = null;
 let timer = null;
@@ -23,6 +24,7 @@ let pageHidden = false;
 const initialText = Object.fromEntries([...document.querySelectorAll("[data-i18n]")].map((node) => [node.dataset.i18n, node.textContent]));
 const WRITES = new Set(["set_like", "post_comment", "share_video", "send_message"]);
 const STARTUP_ERRORS = new Set(["PLAYWRIGHT_NOT_INSTALLED", "BROWSER_NOT_INSTALLED", "BROWSER_DEPENDENCIES_MISSING", "BROWSER_LAUNCH_FAILED", "BROWSER_PROFILE_UNWRITABLE", "PROFILE_IN_USE"]);
+const RUNTIME_PENDING = new Set(["idle", "checking", "installing_browser", "installing_dependencies", "verifying"]);
 const OPERATIONS = {
   browse: [["limit", "number", 1], ["dwell_seconds", "number", 3]],
   search: [["query", "text", ""], ["limit", "number", 5]],
@@ -76,6 +78,54 @@ function renderWarnings() {
   $("#frame-state").textContent = frameError ? t("frameUnavailable") : frame ? t("frameLive") : t("noFrame");
 }
 
+function runtimePending() {
+  return snapshot?.browser_runtime?.managed === true && RUNTIME_PENDING.has(snapshot.browser_runtime.state);
+}
+
+function renderRuntime() {
+  const runtime = snapshot?.browser_runtime;
+  const panel = $("#browser-runtime");
+  panel.hidden = !runtime?.managed;
+  if (!runtime?.managed) return;
+  const preparing = runtimePending();
+  panel.classList.toggle("error", runtime.state === "failed");
+  panel.classList.toggle("ready", runtime.state === "ready");
+  panel.setAttribute("aria-busy", String(preparing));
+  $("#runtime-title").textContent = t(runtime.state === "ready" ? "runtimeReady" : "runtimeTitle");
+  $("#runtime-message").textContent = runtime.state === "failed" ? t(`error_${runtime.error_code}`, runtime.message || t("runtime_failed")) : t(`runtime_${runtime.state}`, runtime.message || "");
+  const progress = $("#runtime-progress");
+  progress.hidden = !preparing;
+  const percentage = /^(\d{1,3})%$/.exec(runtime.detail || "");
+  if (percentage) progress.value = Math.min(100, Number(percentage[1]));
+  else progress.removeAttribute("value");
+  $("#runtime-retry").hidden = runtime.state !== "failed";
+  $("#runtime-retry").disabled = !ready || busy || preparing;
+  $("#runtime-details").hidden = runtime.state !== "failed" || !runtime.detail;
+  $("#runtime-detail").textContent = runtime.detail || "";
+}
+
+function capturePreparation(error, action) {
+  const runtime = error.result?.data?.details?.runtime;
+  if (runtime) snapshot = { ...snapshot, browser_runtime: runtime };
+  if (error.result?.code === "BROWSER_PREPARING") {
+    pendingBrowserAction = action;
+    frame = null;
+    frameError = null;
+    autoFrameBlocked = false;
+    renderRuntime();
+    renderWarnings();
+    notice(() => t("runtimeWaiting"), "", "BROWSER_PREPARING");
+    pollStatus();
+    return true;
+  }
+  if (runtime?.state === "failed") {
+    pendingBrowserAction = action;
+    autoFrameBlocked = true;
+    renderRuntime();
+  }
+  return false;
+}
+
 function applyControl(result) {
   if (!result.data?.control) return;
   controlRevision += 1;
@@ -118,6 +168,7 @@ function updateControls() {
   $("#toggle-pause").disabled = !ready || !snapshot || pauseBusy;
   for (const node of document.querySelectorAll("[data-owned]")) node.disabled = !ready || busy || !owned || document.hidden;
   $("#open-login").disabled ||= otherOwner;
+  $("#open-login").disabled ||= runtimePending() && pendingBrowserAction === "login";
   $("#acquire").disabled ||= owned || otherOwner;
   $("#bind-account").disabled ||= !!statusError || !snapshot?.browser?.authenticated || !snapshot?.config_writable || otherOwner;
   $("#run-operation").disabled ||= !snapshot?.enabled || snapshot?.paused || snapshot?.control?.active;
@@ -126,6 +177,12 @@ function updateControls() {
   $("#browser-frame").classList.toggle("inactive", !owned || busy || document.hidden);
   $("#settings-dirty").hidden = !settingsDirty;
   $("#check-receipt").hidden = pendingWrite === null;
+  $("#runtime-retry").disabled = !ready || busy || runtimePending();
+  if (runtimePending()) {
+    $("#send-text").disabled = true;
+    $("#send-key").disabled = true;
+    for (const button of document.querySelectorAll("[data-scroll]")) button.disabled = true;
+  }
 }
 
 async function run(task, { silent = false } = {}) {
@@ -166,6 +223,7 @@ function renderStatus() {
   $("#toggle-pause").textContent = snapshot.paused ? t("resume") : t("pause");
   renderSettings();
   updateControls();
+  renderRuntime();
 }
 
 async function refreshStatus() {
@@ -176,7 +234,13 @@ async function refreshStatus() {
     const data = (await api("status")).data;
     // 较早发出的账号查询，不能覆盖随后已经确认的接管或归还结果。
     if (revision !== controlRevision) data.control = snapshot?.control;
+    const previousRuntime = snapshot?.browser_runtime?.state;
     snapshot = data;
+    if (data.browser_runtime?.state === "ready" && previousRuntime !== "ready") {
+      autoFrameBlocked = false;
+      if (lastNotice?.resultCode === "BROWSER_PREPARING") notice(() => t("runtimeReady"), "success");
+    }
+    if (data.browser_runtime?.state === "failed") autoFrameBlocked = true;
     statusError = data.browser?.status_available === false && data.browser?.browser_started !== false ? {
       result: { code: data.browser.code || "ACCOUNT_STATUS_UNAVAILABLE", data: data.browser },
     } : null;
@@ -193,6 +257,11 @@ async function refreshStatus() {
 
 async function refreshFrame() {
   if (!snapshot?.control?.owned) return;
+  if (runtimePending() && snapshot.browser_runtime.state !== "idle") {
+    pendingBrowserAction ||= "frame";
+    renderRuntime();
+    return false;
+  }
   try {
     const data = (await api("frame")).data;
     if (!/^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(data.image || "") || !Number.isFinite(data.width) || !Number.isFinite(data.height)) {
@@ -210,9 +279,10 @@ async function refreshFrame() {
     frameError = null;
     autoFrameBlocked = false;
   } catch (error) {
+    if (capturePreparation(error, pendingBrowserAction || "frame")) return false;
     frame = null;
     frameError = error;
-    autoFrameBlocked = STARTUP_ERRORS.has(error.result?.code);
+    autoFrameBlocked = STARTUP_ERRORS.has(error.result?.code) || snapshot?.browser_runtime?.state === "failed";
     throw error;
   } finally {
     renderWarnings();
@@ -244,6 +314,7 @@ async function navigate(action) {
   try {
     applyControl(await api("control", { action }));
   } catch (error) {
+    if (capturePreparation(error, action)) return false;
     navigationError = error;
   }
   if (STARTUP_ERRORS.has(navigationError?.result?.code)) {
@@ -392,6 +463,7 @@ function renderLocale() {
   renderStatus();
   renderNotice();
   renderWarnings();
+  renderRuntime();
   renderReceipts();
   if (lastResult) showResult(lastResult);
 }
@@ -451,8 +523,8 @@ screen.addEventListener("keydown", (event) => {
 
 $("#open-login").addEventListener("click", () => run(async () => {
   if (!snapshot?.control?.owned) applyControl(await api("control", { action: "acquire" }));
-  await navigate("login");
-  notice(() => t("loginReady"), "success");
+  pendingBrowserAction = null;
+  if (await navigate("login") !== false) notice(() => t("loginReady"), "success");
 }));
 $("#acquire").addEventListener("click", () => run(async () => {
   applyControl(await api("control", { action: "acquire" }));
@@ -461,12 +533,27 @@ $("#acquire").addEventListener("click", () => run(async () => {
   notice(() => t("controlMine"), "success");
 }));
 $("#release").addEventListener("click", () => run(async () => {
+  pendingBrowserAction = null;
   applyControl(await api("control", { action: "release" }));
   frame = null;
   frameError = null;
   renderWarnings();
   pollStatus();
   notice(() => t("released"), "success");
+}));
+$("#runtime-retry").addEventListener("click", () => run(async () => {
+  if (pendingBrowserAction && !snapshot?.control?.owned) {
+    if (snapshot?.control?.active) pendingBrowserAction = null;
+    else applyControl(await api("control", { action: "acquire" }));
+  }
+  const result = await api("prepare", {});
+  snapshot = { ...snapshot, browser_runtime: result.data.browser_runtime };
+  frameError = null;
+  autoFrameBlocked = false;
+  renderRuntime();
+  renderWarnings();
+  notice(() => t("runtimeWaiting"), "", "BROWSER_PREPARING");
+  pollStatus();
 }));
 for (const button of document.querySelectorAll("[data-control]")) button.addEventListener("click", () => run(() => navigate(button.dataset.control)));
 for (const button of document.querySelectorAll("[data-scroll]")) button.addEventListener("click", () => run(() => sendInput("scroll", { delta_y: Number(button.dataset.scroll) })));
@@ -539,6 +626,7 @@ async function initialize() {
 
 $("#refresh-status").addEventListener("click", () => run(ready ? refreshStatus : initialize));
 document.addEventListener("visibilitychange", () => {
+  if (document.hidden) pendingBrowserAction = null;
   gesture = null;
   frame = null;
   $("#remote-text").value = "";
@@ -549,6 +637,7 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 window.addEventListener("pagehide", () => {
+  pendingBrowserAction = null;
   pageHidden = true;
   clearTimeout(timer);
   timer = null;
@@ -571,8 +660,15 @@ window.addEventListener("pageshow", (event) => {
 
 async function tick() {
   if (!document.hidden && ready && !busy && !gesture) {
-    if ($("#auto-refresh").checked && snapshot?.control?.owned && !autoFrameBlocked) await run(refreshFrame, { silent: true });
-    if (Date.now() - lastStatusAt > 15000) pollStatus();
+    if (pendingBrowserAction && snapshot?.control?.owned && ["ready", "external"].includes(snapshot?.browser_runtime?.state)) {
+      const action = pendingBrowserAction;
+      pendingBrowserAction = null;
+      await run(async () => {
+        if (action === "frame") await refreshFrame();
+        else if (await navigate(action) !== false) notice(() => t("loginReady"), "success");
+      });
+    } else if (!runtimePending() && $("#auto-refresh").checked && snapshot?.control?.owned && !autoFrameBlocked) await run(refreshFrame, { silent: true });
+    if (Date.now() - lastStatusAt > (runtimePending() ? 1500 : 15000)) pollStatus();
   }
   if (!pageHidden) timer = setTimeout(tick, 2000);
 }

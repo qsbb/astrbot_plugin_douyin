@@ -69,3 +69,22 @@ jobs:
       - name: Test offline browser, Page and service flows
         run: |
           python -m pytest tests -q --basetemp "$RUNNER_TEMP/douyin-tests" -o cache_dir="$RUNNER_TEMP/douyin-pytest-cache" --junitxml="$RUNNER_TEMP/douyin-tests.xml"
+
+  browser-bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout plugin
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: astrbot_plugin_douyin
+      - name: Verify installation in a clean Linux container
+        run: |
+          mkdir -p "$RUNNER_TEMP/douyin-bootstrap"
+          docker run --rm --init \
+            -w /app \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -v "$GITHUB_WORKSPACE/astrbot_plugin_douyin:/app/astrbot_plugin_douyin:ro" \
+            -v "$RUNNER_TEMP/douyin-bootstrap:/data" \
+            python:3.12-slim-bookworm sh -c \
+            'python -m pip install -r /app/astrbot_plugin_douyin/requirements.txt && python -m astrbot_plugin_douyin.tests.runtime_smoke --data-dir /data --expect-install --expect-system-deps'

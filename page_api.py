@@ -31,6 +31,7 @@ class PageApi:
             "pause",
             "bind",
             "settings",
+            "prepare",
         ):
 
             async def handler(endpoint=name):

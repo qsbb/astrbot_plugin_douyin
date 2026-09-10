@@ -1,6 +1,6 @@
 # 接口与协作边界
 
-中文项目名为“拾趣”，插件展示名为“凝心溯溪-趣”，Page 标题为“拾趣 · 抖音工作台”。技术 ID `astrbot_plugin_douyin`、Python 工程名 `astrbot-plugin-douyin`、命令前缀 `/dy` 和当前开发版本 `0.0.1` 保持不变。
+中文项目名为“拾趣”，插件展示名为“凝心溯溪-趣”，Page 标题为“拾趣 · 抖音工作台”。技术 ID 为 `astrbot_plugin_douyin`，Python 工程名为 `astrbot-plugin-douyin`，命令前缀为 `/dy`。
 
 所有工具都由 AstrBot 原生 `@filter.llm_tool` 注册。调用者来自 `event.unified_msg_origin`、`event.get_sender_id()`、`event.is_admin()`，模型不能填写或更换宿主身份。站内写入要求管理员角色、调用会话名单、调用者名单、具体动作持续授权、绑定账号及必要的目标名单同时成立。
 
@@ -40,10 +40,13 @@
 | POST action | `{operation,params,request_id?}` | 与 Bot 相同语义执行器，写操作与 receipt 查询必须提供 request_id |
 | POST bind | `{}` | 从浏览器实测当前账号并保存绑定 |
 | POST settings | `{config}` | 严格允许 enabled、allowed_actions/target_refs/origins/actor_ids |
+| POST prepare | `{}` | 重试后台浏览器准备，立即返回 browser_runtime 状态 |
 | POST pause | `{paused}` | 复用现有暂停/恢复入口 |
 | GET receipts | 无 | 最近 20 条结构化操作回执，不重复提交 |
 
 Page 结果使用 `{result: <douyin.result.v1>}`，避免 SDK 将 `status=ok` 的 data 自动解包后丢失 request_id。响应携带 `Cache-Control: no-store`。认证失败和超大/畸形请求使用标准宿主错误响应。
+
+`status` 中的 `browser_runtime` 提供检查、下载、补齐系统库、启动验证、就绪或失败状态。宿主 `initialize()` 会启动后台准备；Page 请求不会同步等待下载。管理器只在子进程中设置浏览器缓存和临时目录环境，使用当前 Python 的 Playwright CLI 与公开 SDK 选择匹配版本，以显式 `executable_path` 启动。安装锁和进程树清理属于本插件的数据与生命周期，不修改宿主进程环境。
 
 身份仅取 `request.username`，转换为独立的 `DashboardCaller`；空用户名和 `api_key:` 身份被拒绝，前端不能提供 UMO、sender 或 is_admin。Dashboard 操作者无需冒充聊天账号或加入聊天会话名单，但结构化写动作仍需启用、绑定账号、动作授权与目标名单。LLM 工具不能创建 DashboardCaller，也不能调用 Page 专用入口。
 

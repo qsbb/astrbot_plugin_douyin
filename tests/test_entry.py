@@ -124,12 +124,18 @@ async def test_terminate_cleans_service_and_only_owned_tools(plugin):
 
 def test_plugin_registers_page_api_without_starting_browser(plugin):
     assert plugin.page_api.registered
-    assert plugin.context.register_web_api.call_count == 9
+    assert plugin.context.register_web_api.call_count == 10
     assert all(
         call.args[0].startswith(f"/{PLUGIN_ID}/page/")
         for call in plugin.context.register_web_api.call_args_list
     )
     assert plugin.service.browser._page is None
+
+
+async def test_host_initialize_starts_browser_preparation_in_background(plugin):
+    plugin.browser_runtime.start = Mock()
+    await plugin.initialize()
+    plugin.browser_runtime.start.assert_called_once_with()
 
 
 async def test_invalid_mentions_never_reach_executor(plugin):

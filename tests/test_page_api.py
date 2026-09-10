@@ -2,6 +2,7 @@ import asyncio
 import importlib.util
 import json
 import os
+import time
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -291,7 +292,7 @@ async def test_page_writes_require_client_request_id_and_preserve_envelope(api):
 
 async def test_page_routes_cache_and_closed_lifecycle(api):
     calls = api.context.register_web_api.call_args_list
-    assert len(calls) == 9 and len({c.args[0] for c in calls}) == 9
+    assert len(calls) == 10 and len({c.args[0] for c in calls}) == 10
     result = await api.handle("status")
     assert result["headers"]["Cache-Control"] == "no-store"
     assert result["body"]["result"]["data"]["config_writable"]
@@ -305,6 +306,29 @@ async def test_large_payload_rejected_before_json(api):
     result = await api.handle("input")
     assert result["status_code"] == 413
     page_api.request.json.assert_not_awaited()
+
+
+async def test_page_can_retry_background_browser_preparation(api):
+    runtime = SimpleNamespace(
+        start=Mock(), snapshot=lambda: {"state": "checking", "managed": True}
+    )
+    api.service.browser_runtime = runtime
+    response = await api.handle("prepare")
+    assert response["body"]["result"]["data"]["browser_runtime"]["state"] == "checking"
+    runtime.start.assert_called_once_with(retry=True)
+
+
+async def test_visible_preparation_status_keeps_only_owners_control_lease(service):
+    service.browser_runtime = SimpleNamespace(
+        snapshot=lambda: {"state": "installing_browser", "managed": True}
+    )
+    await service.page_execute(ADMIN, "control", {"action": "acquire"})
+    service._page_deadline = time.monotonic() + 10
+    before = service._page_deadline
+    await service.page_execute(OTHER, "status")
+    assert service._page_deadline == before
+    await service.page_execute(ADMIN, "status")
+    assert service._page_deadline > before + 250
 
 
 @pytest.mark.parametrize(

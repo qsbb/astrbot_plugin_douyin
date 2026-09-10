@@ -37,12 +37,20 @@ PARAMETERS = {
 
 class DouyinService(PageControlMixin):
     def __init__(
-        self, data_dir: Path, settings: Settings, browser, analyzer, diagnostics
+        self,
+        data_dir: Path,
+        settings: Settings,
+        browser,
+        analyzer,
+        diagnostics,
+        *,
+        browser_runtime=None,
     ):
         self.settings = settings
         self.browser = browser
         self.analyzer = analyzer
         self.diagnostics = diagnostics
+        self.browser_runtime = browser_runtime
         self.store = StateStore(data_dir)
         self._operation_lock = asyncio.Lock()
         self._jobs: dict[str, dict] = {}
@@ -672,6 +680,7 @@ class DouyinService(PageControlMixin):
             *(j["task"] for j in self._jobs.values()), return_exceptions=True
         )
         # 先停止网络和浏览器，不能因为其中一个清理失败而泄漏另一个。
-        await asyncio.gather(
-            self.browser.close(), self.analyzer.close(), return_exceptions=True
-        )
+        cleanup = [self.browser.close(), self.analyzer.close()]
+        if self.browser_runtime is not None:
+            cleanup.append(self.browser_runtime.close())
+        await asyncio.gather(*cleanup, return_exceptions=True)

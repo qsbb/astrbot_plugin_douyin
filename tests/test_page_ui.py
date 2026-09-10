@@ -437,6 +437,150 @@ async def test_missing_browser_error_stays_visible_and_stops_automatic_launch_re
     assert not ui.errors
 
 
+class RuntimeFixture:
+    def __init__(self, state="installing_browser"):
+        self.state = state
+        self.starts = []
+
+    def snapshot(self):
+        return {
+            "state": self.state,
+            "managed": True,
+            "message": "浏览器准备",
+            "detail": "50%" if self.state == "installing_browser" else "",
+            "error_code": "BROWSER_DOWNLOAD_FAILED" if self.state == "failed" else "",
+        }
+
+    def start(self, retry=False):
+        self.starts.append(retry)
+        self.state = "checking"
+
+    async def close(self):
+        self.state = "closed"
+
+
+@pytest.fixture
+async def preparing_ui(ui):
+    runtime = RuntimeFixture()
+    ui.service.browser_runtime = runtime
+    original_navigate = ui.service.browser.remote_navigate
+    original_frame = ui.service.browser.remote_frame
+    attempts, opened = [], []
+
+    def require_ready():
+        if runtime.state == "failed":
+            raise PluginError(
+                "BROWSER_DOWNLOAD_FAILED", "下载失败。", {"runtime": runtime.snapshot()}
+            )
+        if runtime.state != "ready":
+            raise PluginError(
+                "BROWSER_PREPARING", "正在准备浏览器。", {"runtime": runtime.snapshot()}
+            )
+
+    async def navigate(action):
+        attempts.append(action)
+        require_ready()
+        opened.append(action)
+        return await original_navigate(action)
+
+    async def frame():
+        require_ready()
+        return await original_frame()
+
+    ui.service.browser.remote_navigate = navigate
+    ui.service.browser.remote_frame = frame
+    await ui.page.locator("#refresh-status").click()
+    await expect(ui.page.locator("#browser-runtime")).to_be_visible()
+    return ui, runtime, attempts, opened
+
+
+async def test_preparation_progress_automatically_continues_login_once(preparing_ui):
+    ui, runtime, attempts, opened = preparing_ui
+    page = ui.page
+    assert not ui.service.settings.enabled
+    await expect(page.locator("#runtime-message")).to_contain_text("下载")
+    await expect(page.locator("#runtime-progress")).to_have_attribute("value", "50")
+    await page.locator("#open-login").click()
+    await expect(page.locator("#notice")).to_contain_text("自动准备浏览器")
+    await expect(page.locator("#browser-error")).to_be_hidden()
+    await expect(page.locator("#open-login")).to_be_disabled()
+    assert opened == []
+    runtime.state = "ready"
+    await expect(page.locator("#browser-frame")).to_be_visible(timeout=10000)
+    await expect(ui.remote.locator("#dialog")).to_be_visible()
+    await expect(page.locator("#runtime-title")).to_have_text("浏览器已就绪")
+    await expect(page.locator("#refresh-frame")).to_be_enabled()
+    await page.clock.install()
+    await page.clock.fast_forward(12000)
+    await expect(page.locator("#refresh-frame")).to_be_enabled()
+    assert attempts == ["login", "login"] and opened == ["login"]
+    assert not runtime.starts
+    assert not ui.errors
+
+
+async def test_failed_setup_has_one_click_retry_and_recovers_pending_login(
+    preparing_ui,
+):
+    ui, runtime, _, opened = preparing_ui
+    page = ui.page
+    runtime.state = "failed"
+    await page.locator("#refresh-status").click()
+    await page.locator("#open-login").click()
+    await expect(page.locator("#runtime-retry")).to_be_visible()
+    await expect(page.locator("#runtime-message")).to_contain_text("下载未完成")
+    await page.locator("#runtime-retry").click()
+    await expect(page.locator("#runtime-message")).to_contain_text("正在检查")
+    assert runtime.starts == [True]
+    runtime.state = "ready"
+    await expect(page.locator("#browser-frame")).to_be_visible(timeout=10000)
+    await expect(page.locator("#browser-error")).to_be_hidden()
+    await expect(page.locator("#runtime-retry")).to_be_hidden()
+    assert opened == ["login"]
+    assert sum(call["endpoint"] == "page/prepare" for call in ui.calls) == 1
+    assert not ui.errors
+
+
+@pytest.mark.parametrize("cancel", ["release", "hide"])
+async def test_releasing_or_hiding_page_cancels_queued_login(preparing_ui, cancel):
+    ui, runtime, attempts, opened = preparing_ui
+    page = ui.page
+    await page.locator("#open-login").click()
+    await expect(page.locator("#notice")).to_contain_text("自动准备浏览器")
+    if cancel == "release":
+        await page.locator("#release").click()
+    else:
+        await page.evaluate(
+            """() => {Object.defineProperty(document,'hidden',{value:true,configurable:true});document.dispatchEvent(new Event('visibilitychange'));}"""
+        )
+    runtime.state = "ready"
+    if cancel == "hide":
+        await page.evaluate(
+            """() => {Object.defineProperty(document,'hidden',{value:false,configurable:true});document.dispatchEvent(new Event('visibilitychange'));}"""
+        )
+    await page.locator("#refresh-status").click()
+    await expect(page.locator("#runtime-title")).to_have_text("浏览器已就绪")
+    await page.clock.install()
+    await page.clock.fast_forward(10000)
+    await expect(page.locator("#refresh-status")).to_be_enabled()
+    assert attempts == ["login"] and opened == []
+    await expect(ui.remote.locator("#dialog")).to_be_hidden()
+    assert not ui.errors
+
+
+async def test_preparation_progress_follows_host_language(preparing_ui):
+    ui, _, _, _ = preparing_ui
+    english = json.loads(
+        (ROOT / ".astrbot-plugin/i18n/en-US.json").read_text(encoding="utf-8")
+    )
+    await ui.page.evaluate(
+        "i18n=>window.setHostContext({locale:'en-US',i18n})", english
+    )
+    await expect(ui.page.locator("#runtime-message")).to_have_text(
+        english["pages"]["manager"]["runtime_installing_browser"]
+    )
+    assert not ui.errors
+
+
 def test_page_files_and_i18n_metadata_exist():
     locale_keys = []
     for lang in ("zh-CN", "en-US"):
@@ -458,5 +602,7 @@ def test_page_files_and_i18n_metadata_exist():
         "settings-form",
         "quick-form",
         "receipts",
+        "browser-runtime",
+        "runtime-retry",
     ):
         assert f'id="{control}"' in source
