@@ -87,7 +87,12 @@ class PageControlMixin:
         except PluginError as exc:
             return self._result(
                 uuid4().hex,
-                {"status": "failed", "code": exc.code, "message": exc.message},
+                {
+                    "status": "failed",
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": exc.details,
+                },
             )
         except TimeoutError:
             return self._result(
@@ -98,13 +103,13 @@ class PageControlMixin:
                     "message": "浏览器忙或操作超时，请刷新状态。",
                 },
             )
-        except Exception:
+        except Exception as exc:
             # 不记录 Playwright 错误详情，里面可能包含用户输入的验证码或密码。
             self.diagnostics.emit(
                 "WARNING",
                 "PAGE_OPERATION_FAILED",
                 "Page operation failed",
-                {"operation": operation},
+                {"operation": operation, "error_type": type(exc).__name__},
             )
             return self._result(
                 uuid4().hex,

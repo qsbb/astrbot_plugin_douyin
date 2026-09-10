@@ -20,6 +20,7 @@
       <div class="metric"><span data-i18n="controlState">浏览器控制权</span><strong id="control-state">—</strong></div>
       <div class="metric"><span data-i18n="pluginState">插件状态</span><strong id="plugin-state">—</strong></div>
     </section>
+    <div id="status-warning" role="status" aria-live="polite" class="notice error" hidden></div>
     <div class="workspace">
       <section class="card browser-card">
         <div class="section-head"><div><h2 data-i18n="browserTitle">Bot 的抖音浏览器</h2><p data-i18n="browserHint">接管后可直接点击画面、输入文字或拖动滑块；Bot 会等待你归还。</p></div><span id="frame-state" class="pill" data-i18n="noFrame">尚未获取画面</span></div>
@@ -31,6 +32,7 @@
           <button type="button" data-control="inbox" data-owned data-i18n="inbox">私信</button>
           <button type="button" data-control="reload" data-owned data-i18n="reload">刷新网页</button>
         </div>
+        <div id="browser-error" role="alert" class="notice error" hidden></div>
         <div class="viewport-wrap">
           <div id="empty-frame"><span class="empty-mark" aria-hidden="true">趣</span><h3 data-i18n="emptyTitle">从登录开始</h3><p data-i18n="emptyHint">打开浏览器后，二维码和登录页面会显示在这里。已有登录状态会继续使用。</p></div>
           <img id="browser-frame" hidden draggable="false" tabindex="0" alt="Bot 的抖音浏览器画面" data-i18n-alt="frameAlt">

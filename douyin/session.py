@@ -72,15 +72,36 @@ class BrowserSession:
         self._remote_main_page = None
         self._remote_popup_page = None
         self._remote_closing = False
+        self._navigation_error = None
 
     async def _ensure(self, *, headless: bool | None = None):
+        """冷启动持久化浏览器，并尝试打开抖音首页。
+
+        Args:
+            headless: 可选启动模式覆盖值；Page 首次启动使用无头模式。
+
+        Returns:
+            无返回值。已有页面时直接复用，不重新创建浏览器。
+
+        Raises:
+            PluginError: 数据目录、浏览器安装或系统依赖不满足要求，或者
+                首次导航失败。导航失败时保留已启动的页面供 Page 查看与恢复。
+            asyncio.CancelledError: 请求被取消；启动阶段会清理部分创建的资源。
+        """
         if self._page is not None and not self._page.is_closed():
             return
         if self._context is not None:
             await self.close()
         self._remote_closing = False
-        self.root.mkdir(parents=True, exist_ok=True)
-        self._profile_lock = (self.root / "browser-profile.lock").open("a+b")
+        try:
+            self.root.mkdir(parents=True, exist_ok=True)
+            self._profile_lock = (self.root / "browser-profile.lock").open("a+b")
+        except OSError as exc:
+            raise PluginError(
+                "BROWSER_PROFILE_UNWRITABLE",
+                "无法写入浏览器数据目录，请检查 AstrBot 数据目录的权限。",
+                {"stage": "profile"},
+            ) from exc
         try:
             # 操作系统锁在进程退出时释放，不靠删除锁文件猜测其他实例是否在运行。
             self._profile_lock.seek(0)
@@ -126,14 +147,69 @@ class BrowserSession:
             for extra in self._context.pages[1:]:
                 await extra.close()
             self._page.on("response", self._schedule_capture)
-            # 登录窗口需保留，让管理员处理等待页或人工验证；业务操作另行检查可用性。
-            await self._goto("https://www.douyin.com/", check_ready=False)
-            self.diagnostics.emit(
-                "INFO", "BROWSER_STARTED", "Isolated Douyin browser started"
-            )
-        except BaseException:
+        except BaseException as exc:
             await self.close()
-            raise
+            if not isinstance(exc, Exception):
+                raise
+            reason = str(exc).lower()
+            if isinstance(exc, ModuleNotFoundError) and str(exc.name).startswith(
+                "playwright"
+            ):
+                code = "PLAYWRIGHT_NOT_INSTALLED"
+                message = (
+                    "当前 AstrBot Python 环境缺少 Playwright，请重新安装插件依赖。"
+                )
+            elif any(
+                text in reason
+                for text in (
+                    "executable doesn't exist",
+                    "executable does not exist",
+                    "distribution 'chrome' is not found",
+                    "distribution 'msedge' is not found",
+                )
+            ):
+                code = "BROWSER_NOT_INSTALLED"
+                message = "当前 AstrBot 运行环境没有可用的浏览器。请在同一 Python 环境或容器内运行 python -m playwright install chromium，并将 browser_channel 留空；也可安装已配置的 Chrome/Edge。"
+            elif any(
+                text in reason
+                for text in (
+                    "host system is missing dependencies",
+                    "error while loading shared libraries",
+                    "cannot open shared object file",
+                )
+            ):
+                code = "BROWSER_DEPENDENCIES_MISSING"
+                message = "浏览器缺少系统运行库。请在 AstrBot 所在 Linux 环境或容器内运行 python -m playwright install --with-deps chromium。"
+            else:
+                code = "BROWSER_LAUNCH_FAILED"
+                message = "浏览器启动失败，请检查浏览器配置、数据目录权限及宿主日志。"
+            self.diagnostics.emit(
+                "WARNING",
+                code,
+                "Browser startup failed",
+                {
+                    "stage": "launch",
+                    "browser_channel": self.settings.browser_channel or "chromium",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:4096],
+                },
+            )
+            raise PluginError(
+                code,
+                message,
+                {
+                    "stage": "launch",
+                    "browser_channel": self.settings.browser_channel or "chromium",
+                    "reason": str(exc).splitlines()[0][:500]
+                    if str(exc)
+                    else type(exc).__name__,
+                },
+            ) from exc
+        self.diagnostics.emit(
+            "INFO", "BROWSER_STARTED", "Isolated Douyin browser started"
+        )
+        # 导航与进程启动分开：站点失败时仍保留浏览器，Page 可以展示或恢复画面。
+        await self._goto("https://www.douyin.com/", check_ready=False)
 
     def _schedule_capture(self, response):
         parsed = urlsplit(response.url)
@@ -184,11 +260,32 @@ class BrowserSession:
             return
 
     async def _goto(self, url: str, *, check_ready: bool = True):
-        await self._page.goto(url, wait_until="domcontentloaded")
+        try:
+            await self._page.goto(url, wait_until="domcontentloaded")
+        except Exception as exc:
+            raise self._navigation_failure(exc) from exc
         if urlsplit(self._page.url).hostname not in {"www.douyin.com", "douyin.com"}:
             raise PluginError("NAVIGATION_REJECTED", "页面跳转到了不支持的站点。")
+        self._navigation_error = None
         if check_ready:
             await self._check_challenge()
+
+    def _navigation_failure(self, exc: Exception) -> PluginError:
+        """记录导航阶段的安全原因，不包含网址参数或页面输入。"""
+        match = re.search(r"net::[A-Z_]+", str(exc))
+        reason = match.group(0) if match else type(exc).__name__
+        self._navigation_error = {"stage": "navigation", "reason": reason}
+        self.diagnostics.emit(
+            "WARNING",
+            "BROWSER_NAVIGATION_FAILED",
+            "Browser navigation failed; keeping current page",
+            self._navigation_error,
+        )
+        return PluginError(
+            "BROWSER_NAVIGATION_FAILED",
+            f"浏览器已启动，但抖音页面打开失败（{reason}）。请检查 AstrBot 主机或容器的网络，再点击首页或刷新网页。",
+            dict(self._navigation_error),
+        )
 
     async def _check_challenge(self, page=None):
         page = page or self._page
@@ -217,17 +314,52 @@ class BrowserSession:
             )
         return locator
 
-    async def _account_identity(self, page=None) -> str:
+    async def _account_identity(self, page=None, *, timeout_ms: int = 8000) -> str:
+        """通过站内当前用户接口核实账号，不读取登录凭据。
+
+        Args:
+            page: 可选的主页面；登录弹窗控制期间仍从主站查询身份。
+            timeout_ms: 账号接口的请求预算，单位毫秒。
+
+        Returns:
+            已核实的 user:UID 标识。
+
+        Raises:
+            PluginError: 尚未登录、需要人工验证或账号接口暂时不可用。
+        """
         page = page or self._page
         await self._check_challenge(page)
         # 只读当前用户接口；不读取 Cookie、localStorage 或昵称来推断身份。
-        result = await page.evaluate("""async () => {
-            const response = await fetch('/aweme/v1/web/query/user/?aid=6383&device_platform=webapp', {credentials:'include'});
-            if (!response.ok) return {authenticated:false};
-            const data = await response.json();
-            const uid = data.status_code === 0 && data.user ? data.user.uid : null;
-            return {uid: typeof uid === 'string' ? uid : null};
-        }""")
+        try:
+            result = await page.evaluate(
+                """async timeoutMs => {
+                try {
+                    const response = await fetch('/aweme/v1/web/query/user/?aid=6383&device_platform=webapp', {credentials:'include', signal:AbortSignal.timeout(timeoutMs)});
+                    if (!response.ok) return {unavailable:true, reason:'http_error', http_status:response.status};
+                    let data;
+                    try {data=await response.json();} catch {return {unavailable:true,reason:'invalid_json'};}
+                    if (!data || typeof data!=='object') return {unavailable:true,reason:'invalid_response'};
+                    const uid = data.status_code === 0 && data.user ? data.user.uid : null;
+                    return {uid: typeof uid === 'string' ? uid : null};
+                } catch {return {unavailable:true,reason:'request_failed'};}
+            }""",
+                timeout_ms,
+            )
+        except Exception as exc:
+            raise PluginError(
+                "ACCOUNT_STATUS_UNAVAILABLE",
+                "暂时无法查询登录状态，仍可在 Page 画面中登录或完成验证。",
+                {"stage": "account_status", "reason": type(exc).__name__},
+            ) from exc
+        if not isinstance(result, dict) or result.get("unavailable"):
+            raise PluginError(
+                "ACCOUNT_STATUS_UNAVAILABLE",
+                "暂时无法查询登录状态，仍可在 Page 画面中登录或完成验证。",
+                {
+                    "stage": "account_status",
+                    **(result if isinstance(result, dict) else {}),
+                },
+            )
         uid = result.get("uid") if isinstance(result, dict) else None
         if (
             not isinstance(uid, str)
@@ -265,17 +397,20 @@ class BrowserSession:
                 "authenticated": False,
                 "account_ref": "",
                 "browser_started": False,
+                "status_available": False,
                 "capabilities": capabilities,
             }
         try:
             identity_page = self._remote_main_page
             if identity_page is None or identity_page.is_closed():
                 identity_page = self._page
-            account = await self._account_identity(identity_page)
+            # 信息面板使用较短预算，避免登录检查长时间占用交互画面。
+            account = await self._account_identity(identity_page, timeout_ms=2500)
             return {
                 "authenticated": True,
                 "account_ref": account,
                 "browser_started": True,
+                "status_available": True,
                 "capabilities": capabilities,
             }
         except PluginError as exc:
@@ -284,6 +419,24 @@ class BrowserSession:
                 "account_ref": "",
                 "browser_started": True,
                 "code": exc.code,
+                "message": exc.message,
+                "status_available": exc.code == "LOGIN_REQUIRED",
+                "capabilities": capabilities,
+            }
+        except Exception as exc:
+            self.diagnostics.emit(
+                "WARNING",
+                "ACCOUNT_STATUS_UNAVAILABLE",
+                "Account status query unavailable",
+                {"error_type": type(exc).__name__},
+            )
+            return {
+                "authenticated": False,
+                "account_ref": "",
+                "browser_started": True,
+                "status_available": False,
+                "code": "ACCOUNT_STATUS_UNAVAILABLE",
+                "message": "暂时无法查询登录状态，仍可继续查看浏览器画面。",
                 "capabilities": capabilities,
             }
 
@@ -313,6 +466,13 @@ class BrowserSession:
             )
         except (TypeError, ValueError):
             return False
+
+    def _remote_frame_url_allowed(self, url: str) -> bool:
+        # 只展示本插件固定站内导航失败留下的内部错误页，不扩大输入或导航权限。
+        return self._remote_url_allowed(url) or (
+            self._navigation_error is not None
+            and url in {"about:blank", "chrome-error://chromewebdata/"}
+        )
 
     async def _remote_navigation_guard(self, route):
         request = route.request
@@ -429,7 +589,11 @@ class BrowserSession:
             self._remote_frame = None
             self._remote_popup_page = None
             await popup.close()
-            await main.reload(wait_until="domcontentloaded")
+            try:
+                await main.reload(wait_until="domcontentloaded")
+            except Exception as exc:
+                raise self._navigation_failure(exc) from exc
+            self._navigation_error = None
             self._remote_blocked = False
 
     def _remote_watch_page(self, page):
@@ -439,7 +603,9 @@ class BrowserSession:
             page.on("popup", self._remote_popup)
             page.on("close", self._remote_page_closed)
 
-    async def _remote_prepare(self, *, check_site: bool = True):
+    async def _remote_prepare(
+        self, *, check_site: bool = True, allow_error_page: bool = False
+    ):
         # Page 首次启动在无桌面的服务器同样可用；已有浏览器原样复用。
         await self._ensure(headless=True)
         context = self._page.context
@@ -449,9 +615,12 @@ class BrowserSession:
             await context.route("**/*", self._remote_navigation_guard)
             self._remote_context = context
         self._remote_watch_page(self._page)
-        if check_site and (
-            self._remote_blocked or not self._remote_url_allowed(self._page.url)
-        ):
+        url_allowed = (
+            self._remote_frame_url_allowed(self._page.url)
+            if allow_error_page
+            else self._remote_url_allowed(self._page.url)
+        )
+        if check_site and (self._remote_blocked or not url_allowed):
             self._remote_frame = None
             raise PluginError(
                 "REMOTE_SITE_REJECTED", "当前页面不是允许控制的抖音页面。"
@@ -459,7 +628,7 @@ class BrowserSession:
 
     async def remote_frame(self) -> dict:
         """内存截图供已鉴权管理员操作；不绕过等待页或人工验证。"""
-        await self._remote_prepare()
+        await self._remote_prepare(allow_error_page=True)
         page = self._page
         original_url = page.url
         self._remote_frame = None
@@ -479,7 +648,7 @@ class BrowserSession:
         if (
             page is not self._page
             or page.url != original_url
-            or not self._remote_url_allowed(page.url)
+            or not self._remote_frame_url_allowed(page.url)
         ):
             raise PluginError(
                 "REMOTE_FRAME_CHANGED", "截图时页面已跳转，请重新获取画面。"
@@ -631,16 +800,16 @@ class BrowserSession:
             await previous.close()
         self._remote_blocked = False
         if destination == "reload":
-            await self._page.reload(wait_until="domcontentloaded")
+            try:
+                await self._page.reload(wait_until="domcontentloaded")
+            except Exception as exc:
+                raise self._navigation_failure(exc) from exc
+            self._navigation_error = None
         elif destination == "inbox":
-            await self._page.goto(
-                "https://www.douyin.com/", wait_until="domcontentloaded"
-            )
+            await self._goto("https://www.douyin.com/", check_ready=False)
             await (await self._unique(ui.MESSAGES_OPEN)).click()
         else:
-            await self._page.goto(
-                "https://www.douyin.com/", wait_until="domcontentloaded"
-            )
+            await self._goto("https://www.douyin.com/", check_ready=False)
             if destination == "login":
                 # 登录 UI 可能已打开，也可能是等待页；保留画面让用户处理。
                 button = self._page.get_by_role(
@@ -1297,6 +1466,7 @@ class BrowserSession:
         self._remote_closing = True
         self._remote_frame = None
         self._remote_blocked = False
+        self._navigation_error = None
         for page in self._remote_pages:
             page.remove_listener("framenavigated", self._remote_navigated)
             page.remove_listener("popup", self._remote_popup)

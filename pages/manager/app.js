@@ -8,6 +8,11 @@ let frame = null;
 let gesture = null;
 let settingsDirty = false;
 let lastStatusAt = 0;
+let statusBusy = false;
+let controlRevision = 0;
+let statusError = null;
+let frameError = null;
+let autoFrameBlocked = false;
 let pendingWrite = null;
 let unsubscribe = null;
 let timer = null;
@@ -17,6 +22,7 @@ let receiptRows = [];
 let pageHidden = false;
 const initialText = Object.fromEntries([...document.querySelectorAll("[data-i18n]")].map((node) => [node.dataset.i18n, node.textContent]));
 const WRITES = new Set(["set_like", "post_comment", "share_video", "send_message"]);
+const STARTUP_ERRORS = new Set(["PLAYWRIGHT_NOT_INSTALLED", "BROWSER_NOT_INSTALLED", "BROWSER_DEPENDENCIES_MISSING", "BROWSER_LAUNCH_FAILED", "BROWSER_PROFILE_UNWRITABLE", "PROFILE_IN_USE"]);
 const OPERATIONS = {
   browse: [["limit", "number", 1], ["dwell_seconds", "number", 3]],
   search: [["query", "text", ""], ["limit", "number", 5]],
@@ -44,8 +50,8 @@ function renderNotice() {
   node.setAttribute("role", lastNotice.kind === "error" ? "alert" : "status");
 }
 
-function notice(message, kind = "") {
-  lastNotice = { message, kind };
+function notice(message, kind = "", resultCode = null) {
+  lastNotice = { message, kind, resultCode };
   renderNotice();
 }
 
@@ -56,7 +62,25 @@ function outcome(result) {
 }
 
 function explain(result) {
-  return t(`error_${result.code}`, result.data?.message || result.code || outcome(result));
+  const message = t(`error_${result.code}`, result.data?.message || result.code || outcome(result));
+  const reason = result.data?.details?.reason;
+  return typeof reason === "string" && reason ? `${message} (${reason})` : message;
+}
+
+function renderWarnings() {
+  for (const [selector, error] of [["#status-warning", statusError], ["#browser-error", frameError]]) {
+    const node = $(selector);
+    node.hidden = !error;
+    node.textContent = error ? error.result ? explain(error.result) : error.message : "";
+  }
+  $("#frame-state").textContent = frameError ? t("frameUnavailable") : frame ? t("frameLive") : t("noFrame");
+}
+
+function applyControl(result) {
+  if (!result.data?.control) return;
+  controlRevision += 1;
+  snapshot = { ...snapshot, control: result.data.control };
+  renderStatus();
 }
 
 function withTimeout(promise, milliseconds, message) {
@@ -95,7 +119,7 @@ function updateControls() {
   for (const node of document.querySelectorAll("[data-owned]")) node.disabled = !ready || busy || !owned || document.hidden;
   $("#open-login").disabled ||= otherOwner;
   $("#acquire").disabled ||= owned || otherOwner;
-  $("#bind-account").disabled ||= !snapshot?.browser?.authenticated || !snapshot?.config_writable || otherOwner;
+  $("#bind-account").disabled ||= !!statusError || !snapshot?.browser?.authenticated || !snapshot?.config_writable || otherOwner;
   $("#run-operation").disabled ||= !snapshot?.enabled || snapshot?.paused || snapshot?.control?.active;
   $("#run-operation").title = snapshot?.control?.active ? t("releaseBeforeQuick") : "";
   $("#save-settings").disabled ||= !snapshot?.config_writable || otherOwner;
@@ -112,7 +136,7 @@ async function run(task, { silent = false } = {}) {
     await task();
   } catch (error) {
     if (error.result) showResult(error.result);
-    if (!silent || error.result?.code === "CONTROL_REQUIRED") notice(() => error.result ? explain(error.result) : error.message || t("operationFailed"), "error");
+    if (!silent || error.result?.code === "CONTROL_REQUIRED") notice(() => error.result ? explain(error.result) : error.message || t("operationFailed"), "error", error.result?.code);
     if (["CONTROL_REQUIRED", "CONTROL_BUSY", "SERVICE_CLOSED"].includes(error.result?.code)) {
       frame = null;
       if (snapshot) snapshot.control = { active: false, owned: false };
@@ -135,7 +159,7 @@ function renderSettings() {
 
 function renderStatus() {
   if (!snapshot) return;
-  $("#account-current").textContent = snapshot.browser?.authenticated ? snapshot.browser.account_ref : t("notLoggedIn");
+  $("#account-current").textContent = statusError ? t("accountStatusUnavailable") : snapshot.browser?.authenticated ? snapshot.browser.account_ref : t("notLoggedIn");
   $("#account-bound").textContent = snapshot.expected_account_ref || t("notBound");
   $("#control-state").textContent = snapshot.control?.owned ? t("controlMine") : snapshot.control?.active ? t("controlOther") : t("controlBot");
   $("#plugin-state").textContent = snapshot.paused ? t("paused") : snapshot.enabled ? t("running") : t("disabled");
@@ -145,26 +169,59 @@ function renderStatus() {
 }
 
 async function refreshStatus() {
-  snapshot = (await api("status")).data;
-  lastStatusAt = Date.now();
-  renderStatus();
+  if (statusBusy) return;
+  statusBusy = true;
+  const revision = controlRevision;
+  try {
+    const data = (await api("status")).data;
+    // 较早发出的账号查询，不能覆盖随后已经确认的接管或归还结果。
+    if (revision !== controlRevision) data.control = snapshot?.control;
+    snapshot = data;
+    statusError = data.browser?.status_available === false && data.browser?.browser_started !== false ? {
+      result: { code: data.browser.code || "ACCOUNT_STATUS_UNAVAILABLE", data: data.browser },
+    } : null;
+  } catch (error) {
+    statusError = error;
+    throw error;
+  } finally {
+    statusBusy = false;
+    lastStatusAt = Date.now();
+    renderStatus();
+    renderWarnings();
+  }
 }
 
 async function refreshFrame() {
   if (!snapshot?.control?.owned) return;
-  const data = (await api("frame")).data;
-  if (!/^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(data.image || "") || !Number.isFinite(data.width) || !Number.isFinite(data.height)) {
-    throw new Error(t("invalidResponse"));
+  try {
+    const data = (await api("frame")).data;
+    if (!/^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(data.image || "") || !Number.isFinite(data.width) || !Number.isFinite(data.height)) {
+      throw new Error(t("invalidResponse"));
+    }
+    const image = $("#browser-frame");
+    frame = null;
+    image.src = data.image;
+    await image.decode();
+    frame = { ...data, receivedAt: Date.now() };
+    image.hidden = false;
+    $("#empty-frame").hidden = true;
+    $("#frame-url").textContent = data.url;
+    if (autoFrameBlocked && STARTUP_ERRORS.has(lastNotice?.resultCode)) notice(() => t("frameRecovered"), "success");
+    frameError = null;
+    autoFrameBlocked = false;
+  } catch (error) {
+    frame = null;
+    frameError = error;
+    autoFrameBlocked = STARTUP_ERRORS.has(error.result?.code);
+    throw error;
+  } finally {
+    renderWarnings();
   }
-  const image = $("#browser-frame");
-  frame = null;
-  image.src = data.image;
-  await image.decode();
-  frame = { ...data, receivedAt: Date.now() };
-  image.hidden = false;
-  $("#empty-frame").hidden = true;
-  $("#frame-url").textContent = data.url;
-  $("#frame-state").textContent = t("frameLive");
+}
+
+function pollStatus() {
+  // 账号状态与浏览器画面、输入队列独立；后台查询只更新自己的提示。
+  void refreshStatus().catch(() => {});
 }
 
 function showResult(result) {
@@ -183,9 +240,28 @@ async function sendInput(kind, params, sourceFrame = frame) {
 }
 
 async function navigate(action) {
-  await api("control", { action });
-  await refreshStatus();
-  await refreshFrame();
+  let navigationError;
+  try {
+    applyControl(await api("control", { action }));
+  } catch (error) {
+    navigationError = error;
+  }
+  if (STARTUP_ERRORS.has(navigationError?.result?.code)) {
+    frame = null;
+    frameError = navigationError;
+    autoFrameBlocked = true;
+    renderWarnings();
+    pollStatus();
+    throw navigationError;
+  }
+  // 导航失败时浏览器可能已经打开，仍尝试展示现有页面。
+  try {
+    await refreshFrame();
+  } catch (error) {
+    navigationError ||= error;
+  }
+  pollStatus();
+  if (navigationError) throw navigationError;
 }
 
 function renderFields() {
@@ -315,9 +391,9 @@ function renderLocale() {
   renderFields();
   renderStatus();
   renderNotice();
+  renderWarnings();
   renderReceipts();
   if (lastResult) showResult(lastResult);
-  if (frame) $("#frame-state").textContent = t("frameLive");
 }
 
 function pointerPoint(event) {
@@ -374,20 +450,22 @@ screen.addEventListener("keydown", (event) => {
 });
 
 $("#open-login").addEventListener("click", () => run(async () => {
-  if (!snapshot?.control?.owned) await api("control", { action: "acquire" });
+  if (!snapshot?.control?.owned) applyControl(await api("control", { action: "acquire" }));
   await navigate("login");
   notice(() => t("loginReady"), "success");
 }));
 $("#acquire").addEventListener("click", () => run(async () => {
-  await api("control", { action: "acquire" });
-  await refreshStatus();
-  await refreshFrame();
+  applyControl(await api("control", { action: "acquire" }));
+  try { await refreshFrame(); }
+  finally { pollStatus(); }
   notice(() => t("controlMine"), "success");
 }));
 $("#release").addEventListener("click", () => run(async () => {
-  await api("control", { action: "release" });
+  applyControl(await api("control", { action: "release" }));
   frame = null;
-  await refreshStatus();
+  frameError = null;
+  renderWarnings();
+  pollStatus();
   notice(() => t("released"), "success");
 }));
 for (const button of document.querySelectorAll("[data-control]")) button.addEventListener("click", () => run(() => navigate(button.dataset.control)));
@@ -454,7 +532,7 @@ async function initialize() {
   ready = true;
   renderLocale();
   if (!unsubscribe) unsubscribe = bridge.onContext?.(renderLocale);
-  await refreshStatus();
+  await refreshStatus().catch(() => {});
   await refreshReceipts();
   notice(() => t("connected"), "success");
 }
@@ -465,7 +543,10 @@ document.addEventListener("visibilitychange", () => {
   frame = null;
   $("#remote-text").value = "";
   updateControls();
-  if (!document.hidden && ready) run(async () => { await refreshStatus(); await refreshFrame(); });
+  if (!document.hidden && ready) {
+    run(refreshFrame);
+    pollStatus();
+  }
 });
 window.addEventListener("pagehide", () => {
   pageHidden = true;
@@ -481,16 +562,17 @@ window.addEventListener("pageshow", (event) => {
   if (!event.persisted && !pageHidden) return;
   pageHidden = false;
   if (ready && !unsubscribe) unsubscribe = bridge.onContext?.(renderLocale);
-  if (ready && !document.hidden) run(async () => { await refreshStatus(); await refreshFrame(); });
+  if (ready && !document.hidden) {
+    run(refreshFrame);
+    pollStatus();
+  }
   if (timer === null) timer = setTimeout(tick, 2000);
 });
 
 async function tick() {
   if (!document.hidden && ready && !busy && !gesture) {
-    await run(async () => {
-      if (Date.now() - lastStatusAt > 15000) await refreshStatus();
-      if ($("#auto-refresh").checked && snapshot?.control?.owned) await refreshFrame();
-    }, { silent: true });
+    if ($("#auto-refresh").checked && snapshot?.control?.owned && !autoFrameBlocked) await run(refreshFrame, { silent: true });
+    if (Date.now() - lastStatusAt > 15000) pollStatus();
   }
   if (!pageHidden) timer = setTimeout(tick, 2000);
 }

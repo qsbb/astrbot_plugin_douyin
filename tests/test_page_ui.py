@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 
 import pytest
 from astrbot_plugin_douyin import page_api
-from astrbot_plugin_douyin.core.models import Caller
+from astrbot_plugin_douyin.core.models import Caller, PluginError
 from astrbot_plugin_douyin.core.service import DouyinService
 from astrbot_plugin_douyin.core.settings import Settings
 from astrbot_plugin_douyin.douyin.session import BrowserSession
@@ -135,6 +135,7 @@ async def ui(tmp_path, monkeypatch):
         yield SimpleNamespace(
             page=page,
             remote=remote,
+            remote_context=remote_context,
             service=service,
             api=api,
             config=config,
@@ -280,6 +281,159 @@ async def test_page_settings_i18n_theme_and_mobile_layout(ui):
     await page.set_viewport_size({"width": 390, "height": 844})
     assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     await save_preview(page, "astrbot-douyin-page-mobile.png")
+    assert not ui.errors
+
+
+@pytest.mark.parametrize("failure", ["non_json", "offline"])
+async def test_account_query_failure_keeps_login_frame_and_manual_input(ui, failure):
+    """Real login DOM and screenshots remain usable when the account fetch fails."""
+
+    async def account_failure(route):
+        if failure == "offline":
+            await route.abort("connectionfailed")
+        else:
+            await route.fulfill(content_type="text/html", body="Please wait...")
+
+    await ui.remote_context.route("**/aweme/v1/web/query/user/**", account_failure)
+    page = ui.page
+    await page.locator("#auto-refresh").uncheck()
+    await page.locator("#open-login").click()
+    await expect(page.locator("#browser-frame")).to_be_visible()
+    await expect(page.locator("#control-state")).to_have_text("由你操作")
+    await expect(page.locator("#account-current")).to_have_text("账号状态暂不可用")
+    await expect(page.locator("#status-warning")).to_contain_text(
+        "仍可在浏览器画面内登录"
+    )
+    await expect(page.locator("#bind-account")).to_be_disabled()
+    await remote_click(ui, "#code")
+    await page.locator("#remote-text").fill("123456")
+    await page.locator("#send-text").click()
+    await expect(ui.remote.locator("#code")).to_have_value("123456")
+    calls = [call["endpoint"] for call in ui.calls]
+    acquire = next(
+        index
+        for index, call in enumerate(ui.calls)
+        if call["endpoint"] == "page/control" and call["data"]["action"] == "acquire"
+    )
+    assert calls.index("page/frame", acquire) < calls.index("page/status", acquire)
+    assert not ui.errors
+
+
+async def test_failed_status_endpoint_cannot_block_acquiring_existing_browser(ui):
+    ui.service.browser.status = AsyncMock(side_effect=RuntimeError("status offline"))
+    page = ui.page
+    await page.locator("#auto-refresh").uncheck()
+    await page.locator("#acquire").click()
+    await expect(page.locator("#browser-frame")).to_be_visible()
+    await expect(page.locator("#control-state")).to_have_text("由你操作")
+    await expect(page.locator("#status-warning")).to_be_visible()
+    await expect(page.locator("#refresh-frame")).to_be_enabled()
+    before = sum(call["endpoint"] == "page/frame" for call in ui.calls)
+    await page.locator("#refresh-frame").click()
+    await expect(page.locator("#refresh-frame")).to_be_enabled()
+    assert sum(call["endpoint"] == "page/frame" for call in ui.calls) == before + 1
+    await page.locator("#release").click()
+    await expect(page.locator("#control-state")).to_have_text("由 Bot 使用")
+    await expect(page.locator("#release")).to_be_disabled()
+    assert not ui.errors
+
+
+async def test_navigation_failure_still_shows_existing_frame_without_repeating_action(
+    ui,
+):
+    ui.service.browser.remote_navigate = AsyncMock(
+        side_effect=PluginError("BROWSER_NAVIGATION_FAILED", "页面导航失败。")
+    )
+    page = ui.page
+    await page.locator("#auto-refresh").uncheck()
+    await page.locator("#open-login").click()
+    await expect(page.locator("#browser-frame")).to_be_visible()
+    await expect(page.locator("#notice")).to_contain_text("抖音页面未能打开")
+    await expect(page.locator("#control-state")).to_have_text("由你操作")
+    await expect(page.locator("#refresh-frame")).to_be_enabled()
+    await page.locator("#refresh-frame").click()
+    await expect(page.locator("#refresh-frame")).to_be_enabled()
+    await expect(page.locator("#notice")).to_contain_text("抖音页面未能打开")
+    ui.service.browser.remote_navigate.assert_awaited_once_with("login")
+    assert not ui.errors
+
+
+async def test_failed_account_status_does_not_stop_frame_polling_or_visibility_resume(
+    ui,
+):
+    ui.service.browser.status = AsyncMock(side_effect=RuntimeError("status offline"))
+    page = ui.page
+    await page.locator("#acquire").click()
+    await expect(page.locator("#browser-frame")).to_be_visible()
+    await expect(page.locator("#status-warning")).to_be_visible()
+    await expect(page.locator("#refresh-frame")).to_be_enabled()
+    original_frame = ui.service.browser.remote_frame
+    captured = asyncio.Event()
+
+    async def capture():
+        result = await original_frame()
+        captured.set()
+        return result
+
+    ui.service.browser.remote_frame = capture
+    await page.clock.install()
+    await page.clock.fast_forward(16000)
+    await asyncio.wait_for(captured.wait(), 5)
+    await expect(page.locator("#refresh-frame")).to_be_enabled()
+    await page.locator("#remote-text").fill("temporary input")
+    await page.evaluate("""() => {
+      Object.defineProperty(document, 'hidden', {value:true, configurable:true});
+      document.dispatchEvent(new Event('visibilitychange'));
+    }""")
+    captured.clear()
+    await page.clock.fast_forward(4000)
+    assert not captured.is_set()
+    await expect(page.locator("#remote-text")).to_have_value("")
+    await page.evaluate("""() => {
+      Object.defineProperty(document, 'hidden', {value:false, configurable:true});
+      document.dispatchEvent(new Event('visibilitychange'));
+    }""")
+    await asyncio.wait_for(captured.wait(), 5)
+    await expect(page.locator("#browser-frame")).to_be_visible()
+    await expect(page.locator("#refresh-frame")).to_be_enabled()
+    assert not ui.errors
+
+
+async def test_missing_browser_error_stays_visible_and_stops_automatic_launch_retries(
+    ui,
+):
+    original_ensure = ui.service.browser._ensure
+    ui.service.browser._ensure = AsyncMock(
+        side_effect=PluginError("BROWSER_NOT_INSTALLED", "浏览器未安装。")
+    )
+    page = ui.page
+    await page.locator("#open-login").click()
+    await expect(page.locator("#browser-error")).to_contain_text(
+        "python -m playwright install chromium"
+    )
+    await expect(page.locator("#notice")).to_contain_text("自动重试已暂停")
+    await expect(page.locator("#browser-frame")).to_be_hidden()
+    await expect(page.locator("#refresh-frame")).to_be_enabled()
+    attempts = ui.service.browser._ensure.await_count
+    await page.clock.install()
+    await page.clock.fast_forward(12000)
+    await page.evaluate("() => new Promise(resolve => setTimeout(resolve, 0))")
+    assert ui.service.browser._ensure.await_count == attempts
+    await expect(page.locator("#browser-error")).to_be_visible()
+    english = json.loads(
+        (ROOT / ".astrbot-plugin/i18n/en-US.json").read_text(encoding="utf-8")
+    )
+    await page.evaluate("i18n=>window.setHostContext({locale:'en-US',i18n})", english)
+    await expect(page.locator("#browser-error")).to_have_text(
+        english["pages"]["manager"]["error_BROWSER_NOT_INSTALLED"]
+    )
+    ui.service.browser._ensure = original_ensure
+    await page.locator("#refresh-frame").click()
+    await expect(page.locator("#browser-frame")).to_be_visible()
+    await expect(page.locator("#browser-error")).to_be_hidden()
+    await expect(page.locator("#notice")).to_have_text(
+        english["pages"]["manager"]["frameRecovered"]
+    )
     assert not ui.errors
 
 
